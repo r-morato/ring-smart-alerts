@@ -1,24 +1,23 @@
 # ring-smart-alerts
 
 Turn Ring's generic *"motion detected"* into *"a person and a dog at the front
-door"* — **without your camera images ever leaving your network.**
+door"* — **all the image processing runs locally, no LLM.**
 
-## Private by design
+## No second cloud, no LLM
 
-The image analysis runs entirely on your own hardware. No cloud AI, no LLM, no
-third-party vision API — just two small neural networks doing CPU inference on a
-Raspberry Pi or home server.
+Ring already has your snapshots — that is where they come from. This project adds
+nothing to that: the analysis runs on your own hardware and the picture goes only
+to your own Home Assistant.
 
-- **Your snapshots never touch a third party.** A frame comes *down* from Ring,
-  is analysed in memory (never written to disk), and the only place it is then
-  sent is *your own* Home Assistant — so the notification can show the picture.
-  It is never uploaded to Anthropic, OpenAI, Google, Ultralytics or Hugging Face.
-- **No image analysis service is contacted** — ever. The models (YOLOv8n and
-  CLIP) download their weights once, then run fully offline on your CPU.
+- **No third-party vision service, ever.** The frame is analysed in memory on
+  your CPU — YOLOv8n and CLIP, weights downloaded once then fully offline — and
+  is never uploaded to Anthropic, OpenAI, Google, Ultralytics or Hugging Face.
+- **No LLM, no agent.** Detection is deterministic model inference, not a chatbot
+  reasoning about your doorstep — nothing logs a running description of your front
+  door on someone else's server.
 - **The only outbound traffic** is to Ring's own API (how the events and
-  snapshots arrive in the first place) and to your Home Assistant instance.
-- **No agent, no LLM in the loop.** Detection is deterministic model inference,
-  not a chatbot reasoning about your doorstep.
+  snapshots arrive in the first place) and to your Home Assistant instance. The
+  snapshot is held in memory for one event and never written to local disk.
 
 ## What it does
 
