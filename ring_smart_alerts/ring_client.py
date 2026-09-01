@@ -1,0 +1,175 @@
+"""Ring authentication, snapshot fetching, and event listening.
+
+Wraps the async interface of ``ring-doorbell`` (>= 0.9.14). The library's API is
+async-first and has shifted across versions, so everything here goes through the
+``async_*`` methods.
+
+Auth token and the Firebase Cloud Messaging (FCM) credentials used by the event
+listener are both cached to a single JSON file so that 2FA is only needed on the
+very first run.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any
+
+from ring_doorbell import Auth, AuthenticationError, Requires2FAError, Ring
+from ring_doorbell.listen import RingEventListener
+
+from .config import Settings
+
+logger = logging.getLogger(__name__)
+
+USER_AGENT = "ring-smart-alerts/0.1"
+
+#: async callback invoked for each accepted event: (device, event) -> None
+EventHandler = Callable[[Any, Any], Awaitable[None]]
+#: prompt for the 2FA code; overridable in tests
+OtpProvider = Callable[[], str]
+
+
+def _default_otp() -> str:
+    return input("Ring 2FA code (sent by email/SMS): ").strip()
+
+
+class RingClient:
+    """Connect to Ring, pull snapshots, and dispatch motion/ding events."""
+
+    def __init__(self, settings: Settings, *, otp_provider: OtpProvider = _default_otp) -> None:
+        self._settings = settings
+        self._otp_provider = otp_provider
+        self._cache_path = settings.token_cache_path
+        self._ring: Ring | None = None
+        self._auth: Auth | None = None
+        self._listener: RingEventListener | None = None
+
+    # ------------------------------------------------------------------ auth
+
+    def _read_cache(self) -> dict[str, Any]:
+        if self._cache_path.is_file():
+            try:
+                return json.loads(self._cache_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                logger.warning("Ignoring unreadable token cache at %s", self._cache_path)
+        return {}
+
+    def _write_cache(self, **updates: Any) -> None:
+        data = self._read_cache()
+        data.update(updates)
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._cache_path.write_text(json.dumps(data))
+        # token/credentials are secrets -- keep them owner-only where supported
+        try:
+            self._cache_path.chmod(0o600)
+        except OSError:  # pragma: no cover - e.g. Windows without full ACL support
+            pass
+
+    def _on_token_updated(self, token: dict[str, Any]) -> None:
+        self._write_cache(token=token)
+
+    def _on_credentials_updated(self, credentials: dict[str, Any]) -> None:
+        self._write_cache(fcm=credentials)
+
+    async def _do_2fa_auth(self) -> Auth:
+        s = self._settings
+        auth = Auth(USER_AGENT, None, self._on_token_updated)
+        try:
+            await auth.async_fetch_token(s.ring_email, s.ring_password)
+        except Requires2FAError:
+            code = self._otp_provider()
+            await auth.async_fetch_token(s.ring_email, s.ring_password, code)
+        return auth
+
+    async def connect(self) -> None:
+        """Establish an authenticated session, reusing the cached token if valid."""
+        cache = self._read_cache()
+        token = cache.get("token")
+
+        if token:
+            self._auth = Auth(USER_AGENT, token, self._on_token_updated)
+            self._ring = Ring(self._auth)
+            try:
+                await self._ring.async_create_session()
+            except AuthenticationError:
+                logger.info("Cached Ring token expired -- re-authenticating")
+                self._auth = await self._do_2fa_auth()
+                self._ring = Ring(self._auth)
+        else:
+            self._auth = await self._do_2fa_auth()
+            self._ring = Ring(self._auth)
+
+        await self._ring.async_update_data()
+        logger.info("Connected to Ring; %d device(s) found", len(self._ring.devices().devices_combined))
+
+    # -------------------------------------------------------------- snapshots
+
+    async def get_snapshot(self, device: Any) -> bytes:
+        """Return current JPEG bytes for *device*.
+
+        Battery/low-power cameras cannot snapshot while recording a motion clip;
+        without a Ring subscription this may return a slightly stale frame or
+        raise. Callers should treat failures as non-fatal.
+        """
+        data = await device.async_get_snapshot()
+        if not data:
+            raise RuntimeError(f"No snapshot returned for {device.name!r}")
+        return data
+
+    # ----------------------------------------------------------------- events
+
+    def _find_device(self, doorbot_id: int) -> Any | None:
+        assert self._ring is not None
+        for device in self._ring.devices().devices_combined:
+            if getattr(device, "id", None) == doorbot_id:
+                return device
+        return None
+
+    async def listen(self, on_event: EventHandler, *, stop: asyncio.Event | None = None) -> None:
+        """Start the FCM listener and dispatch accepted events until *stop* is set."""
+        assert self._ring is not None
+        cache = self._read_cache()
+        loop = asyncio.get_running_loop()
+        stop = stop or asyncio.Event()
+
+        self._listener = RingEventListener(
+            self._ring, cache.get("fcm"), self._on_credentials_updated
+        )
+
+        def _dispatch(event: Any) -> None:
+            # Called synchronously by firebase-messaging; hop back onto the loop.
+            asyncio.run_coroutine_threadsafe(self._handle(event, on_event), loop)
+
+        self._listener.add_notification_callback(_dispatch)
+
+        if not await self._listener.start():
+            raise RuntimeError("Ring event listener failed to start")
+        logger.info("Listening for Ring events (%s)", ", ".join(sorted(self._settings.event_kinds)))
+
+        try:
+            await stop.wait()
+        finally:
+            await self._listener.stop()
+
+    async def _handle(self, event: Any, on_event: EventHandler) -> None:
+        if event.is_update or event.kind not in self._settings.event_kinds:
+            logger.debug("Skipping event kind=%s is_update=%s", event.kind, event.is_update)
+            return
+
+        device = self._find_device(event.doorbot_id)
+        if device is None:
+            logger.warning("Event for unknown device id=%s (%s)", event.doorbot_id, event.device_name)
+            return
+
+        try:
+            await on_event(device, event)
+        except Exception:  # noqa: BLE001 - never let one bad event kill the listener
+            logger.exception("Handler failed for %s event on %s", event.kind, event.device_name)
+
+    async def close(self) -> None:
+        if self._auth is not None:
+            await self._auth.async_close()

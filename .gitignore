@@ -1,0 +1,25 @@
+# Secrets / local state
+.env
+token.json
+*.token.cache
+
+# Model weights (downloaded on first run)
+*.pt
+
+# In-flight snapshots
+snapshots/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
