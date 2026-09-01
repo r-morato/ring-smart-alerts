@@ -97,7 +97,7 @@ snapshots and this app deletes the older ones over HA's websocket API.
 ## Setup
 
 ```bash
-git clone https://github.com/<you>/ring-smart-alerts.git
+git clone https://github.com/r-morato/ring-smart-alerts.git
 cd ring-smart-alerts
 
 py -3.12 -m venv .venv           # Windows
@@ -107,6 +107,8 @@ py -3.12 -m venv .venv           # Windows
 
 pip install -r requirements.txt
 ```
+
+(If you forked first, clone your own fork's URL instead.)
 
 The first detection downloads `yolov8n.pt` (~6 MB) automatically, and the first
 CLIP call downloads its checkpoint (~340 MB for the default
