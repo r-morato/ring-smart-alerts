@@ -110,10 +110,8 @@ async def main() -> None:
 
 def _run() -> None:
     """Sync entry point for the ``ring-smart-alerts`` console script."""
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":

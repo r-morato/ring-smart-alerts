@@ -50,7 +50,7 @@ class Settings:
     )
 
     @classmethod
-    def load(cls, env_file: str | os.PathLike[str] | None = ".env") -> "Settings":
+    def load(cls, env_file: str | os.PathLike[str] | None = ".env") -> Settings:
         """Build :class:`Settings` from the environment.
 
         If *env_file* exists it is loaded first (without overriding variables

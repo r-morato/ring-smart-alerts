@@ -12,13 +12,13 @@ very first run.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
-from ring_doorbell import Auth, AuthenticationError, Requires2FAError, Ring
+from ring_doorbell import Auth, AuthenticationError, Requires2FAError, Ring, RingError
 from ring_doorbell.listen import RingEventListener
 
 from .config import Settings
@@ -64,10 +64,8 @@ class RingClient:
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._cache_path.write_text(json.dumps(data))
         # token/credentials are secrets -- keep them owner-only where supported
-        try:
+        with contextlib.suppress(OSError):  # e.g. Windows without full ACL support
             self._cache_path.chmod(0o600)
-        except OSError:  # pragma: no cover - e.g. Windows without full ACL support
-            pass
 
     def _on_token_updated(self, token: dict[str, Any]) -> None:
         self._write_cache(token=token)
@@ -104,7 +102,8 @@ class RingClient:
             self._ring = Ring(self._auth)
 
         await self._ring.async_update_data()
-        logger.info("Connected to Ring; %d device(s) found", len(self._ring.devices().devices_combined))
+        count = len(self._ring.devices().all_devices)
+        logger.info("Connected to Ring; %d device(s) found", count)
 
     # -------------------------------------------------------------- snapshots
 
@@ -124,10 +123,10 @@ class RingClient:
 
     def _find_device(self, doorbot_id: int) -> Any | None:
         assert self._ring is not None
-        for device in self._ring.devices().devices_combined:
-            if getattr(device, "id", None) == doorbot_id:
-                return device
-        return None
+        try:
+            return self._ring.devices().get_video_device(doorbot_id)
+        except RingError:
+            return None
 
     async def listen(self, on_event: EventHandler, *, stop: asyncio.Event | None = None) -> None:
         """Start the FCM listener and dispatch accepted events until *stop* is set."""
@@ -162,7 +161,9 @@ class RingClient:
 
         device = self._find_device(event.doorbot_id)
         if device is None:
-            logger.warning("Event for unknown device id=%s (%s)", event.doorbot_id, event.device_name)
+            logger.warning(
+                "Event for unknown device id=%s (%s)", event.doorbot_id, event.device_name
+            )
             return
 
         try:
