@@ -9,6 +9,7 @@ description = "Ring events -> local YOLOv8 object detection -> Home Assistant no
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "Roger Morato" }]
 dependencies = [
     "ring-doorbell>=0.9.14",
     "ultralytics>=8.3",
@@ -17,6 +18,10 @@ dependencies = [
     "python-dotenv>=1.0",
     "open-clip-torch>=2.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/r-morato/ring-smart-alerts"
+Issues = "https://github.com/r-morato/ring-smart-alerts/issues"
 
 [project.scripts]
 ring-smart-alerts = "ring_smart_alerts.main:_run"
