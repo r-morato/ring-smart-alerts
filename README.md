@@ -5,11 +5,13 @@ door"*.
 
 When your Ring camera fires a **motion** or **ding** event, this app:
 
-1. fetches the current snapshot from Ring,
+1. fetches a snapshot from Ring — a fresh frame if the camera can produce one,
+   otherwise Ring's last stored snapshot, otherwise nothing,
 2. runs it through a **local** YOLOv8n object-detection model (CPU, no GPU, no
    cloud AI), and
 3. posts a descriptive notification to **Home Assistant** via its REST
-   `notify` service, with the snapshot attached.
+   `notify` service, with the snapshot attached (or text-only if no image was
+   available).
 
 Everything runs on a Raspberry Pi / home server. The only outbound traffic is to
 Ring's own API (for the snapshot and the event stream) and to your Home Assistant
@@ -44,10 +46,13 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 
 - **Python 3.11+** (developed on 3.12 — on Windows use `py -3.12`, the bare
   `python` alias is the Store stub).
-- A Ring account. **Battery / low-power cameras cannot take a snapshot while
-  they are recording a motion clip.** Without a Ring Protect subscription the
-  snapshot returned during an event may be a few minutes stale, or the fetch may
-  fail (handled gracefully — you still get a text-only alert).
+- A Ring account. **Battery / low-power cameras cannot take a fresh snapshot
+  while they are recording a motion clip**, and without a Ring Protect
+  subscription there is no snapshot-on-motion. `get_snapshot` handles this in
+  three steps: poll ~16 s for a fresh frame, fall back to Ring's last stored
+  snapshot (may be a few minutes stale), and if there is still nothing, send a
+  text-only alert. Hardwired doorbells (Wired / Pro / Pro 2 / Elite) stay
+  powered and normally return a current frame on the first step.
 - A Home Assistant instance with the mobile app companion (or any other `notify`
   integration) and a long-lived access token.
 
@@ -83,7 +88,7 @@ $EDITOR .env
 | `RING_EMAIL`, `RING_PASSWORD` | ✅ | Ring account login |
 | `HA_URL` | ✅ | e.g. `http://homeassistant.local:8123` |
 | `HA_TOKEN` | ✅ | Long-lived access token (see below) |
-| `HA_NOTIFY_TARGET` | ✅ | The bit after `notify.` — e.g. `mobile_app_pixel` |
+| `HA_NOTIFY_TARGET` | ✅ | The bit after `notify.` — e.g. `mobile_app_<device>`. Must match an existing service exactly; a wrong name gives an opaque HTTP 400 |
 | `MIN_CONFIDENCE` | | Default `0.35` |
 | `EVENT_KINDS` | | Default `motion,ding` |
 | `NOTIFY_ON_EMPTY` | | Default `true` — still alert when nothing is recognised |
@@ -98,8 +103,10 @@ Home Assistant → click your **profile** (bottom-left) → **Security** tab →
 #### Finding your notify target
 
 Developer Tools → **Actions** (formerly Services) → search `notify.` — the
-companion app registers as `notify.mobile_app_<device_name>`. Put just
-`mobile_app_<device_name>` in `HA_NOTIFY_TARGET`.
+companion app registers as `notify.mobile_app_<device_name>`, where
+`<device_name>` is the phone's name in the HA app (slugified). Put just
+`mobile_app_<device_name>` in `HA_NOTIFY_TARGET`. If the name doesn't match a
+real service, Home Assistant rejects every call with a bare `400: Bad Request`.
 
 ### First run (Ring 2FA)
 
