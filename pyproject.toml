@@ -13,6 +13,7 @@ dependencies = [
     "ring-doorbell>=0.9.14",
     "ultralytics>=8.3",
     "requests>=2.31",
+    "aiohttp>=3.9",
     "python-dotenv>=1.0",
     "open-clip-torch>=2.24",
 ]

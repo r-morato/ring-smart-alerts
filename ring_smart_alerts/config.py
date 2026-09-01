@@ -9,7 +9,6 @@ network or touches Ring / Home Assistant -- it only assembles a validated
 from __future__ import annotations
 
 import os
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,9 +47,6 @@ class Settings:
 
     token_cache_path: Path = field(
         default_factory=lambda: Path.home() / ".config" / "ring-smart-alerts" / "token.json"
-    )
-    snapshot_dir: Path = field(
-        default_factory=lambda: Path(tempfile.gettempdir()) / "ring-smart-alerts"
     )
 
     @classmethod
@@ -92,8 +88,6 @@ class Settings:
 
         if token_path := os.environ.get("TOKEN_CACHE_PATH"):
             settings.token_cache_path = Path(token_path).expanduser()
-        if snap_dir := os.environ.get("SNAPSHOT_DIR"):
-            settings.snapshot_dir = Path(snap_dir).expanduser()
         if clip_model := os.environ.get("CLIP_MODEL"):
             settings.clip_model = clip_model
         if clip_pretrained := os.environ.get("CLIP_PRETRAINED"):

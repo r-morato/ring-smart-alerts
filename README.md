@@ -9,15 +9,14 @@ The image analysis runs entirely on your own hardware. No cloud AI, no LLM, no
 third-party vision API — just two small neural networks doing CPU inference on a
 Raspberry Pi or home server.
 
-- **Your snapshots are never uploaded anywhere by this app.** A frame comes
-  *down* from Ring to your machine, is analysed locally, and is deleted the
-  moment the alert is sent.
+- **Your snapshots never touch a third party.** A frame comes *down* from Ring,
+  is analysed in memory (never written to disk), and the only place it is then
+  sent is *your own* Home Assistant — so the notification can show the picture.
+  It is never uploaded to Anthropic, OpenAI, Google, Ultralytics or Hugging Face.
 - **No image analysis service is contacted** — ever. The models (YOLOv8n and
-  CLIP) download their weights once, then run fully offline.
+  CLIP) download their weights once, then run fully offline on your CPU.
 - **The only outbound traffic** is to Ring's own API (how the events and
-  snapshots arrive in the first place) and to *your* Home Assistant instance on
-  your LAN. Nothing goes to Anthropic, OpenAI, Google, Ultralytics or Hugging
-  Face at runtime.
+  snapshots arrive in the first place) and to your Home Assistant instance.
 - **No agent, no LLM in the loop.** Detection is deterministic model inference,
   not a chatbot reasoning about your doorstep.
 
@@ -33,7 +32,9 @@ When your Ring camera fires a **motion** or **ding** event, this app:
    YOLO sees nothing — guesses `package` / `animal` / `person` / `vehicle` for
    the whole frame, and
 3. posts a plain-language notification to **Home Assistant** via its REST
-   `notify` service.
+   `notify` service, with the snapshot attached — the image is uploaded to HA's
+   own image store so the companion app can render it (older ones are pruned
+   automatically).
 
 ---
 
@@ -55,7 +56,7 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 | `ring_smart_alerts/config.py` | Load & validate settings from env / `.env` |
 | `ring_smart_alerts/ring_client.py` | Ring auth (+ first-run 2FA), token/FCM cache, snapshots, event listener |
 | `ring_smart_alerts/detector.py` | YOLOv8n boxes + `ClipClassifier` refinement; `summarize()` → phrase |
-| `ring_smart_alerts/notifier.py` | POST to the Home Assistant `notify` service |
+| `ring_smart_alerts/notifier.py` | Upload the snapshot to HA's image store, POST the `notify` service, prune old images |
 | `ring_smart_alerts/main.py` | Event loop tying it together, snapshot cleanup, graceful shutdown |
 
 ### What crosses the network
@@ -63,12 +64,14 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 | Direction | Endpoint | Carries |
 |-----------|----------|---------|
 | in ← | Ring API + Firebase Cloud Messaging | the event push stream and the snapshot bytes |
-| out → | your Home Assistant (`HA_URL`, your LAN) | the alert text and title — **not the image** |
+| out → | your Home Assistant (`HA_URL`) | the alert text, and the snapshot (uploaded to HA's own image store, `POST /api/image/upload`) |
+| out → | your Home Assistant (websocket API) | delete calls for pruned snapshots |
 | out → (first run only) | Ultralytics CDN, Hugging Face Hub | model weights, cached forever after |
 
-The snapshot itself only ever travels *from* Ring *to* your machine. It is
-written to a temp dir, analysed, and unlinked as soon as the notification
-returns; a sweep on startup clears anything a crash left behind.
+The snapshot travels *from* Ring *to* your machine, is held in memory for
+analysis (never written to disk), and is then handed to **your** Home Assistant
+so the notification can display it. HA keeps the last `KEEP_IMAGES` (5)
+snapshots and this app deletes the older ones over HA's websocket API.
 
 ---
 
@@ -130,7 +133,6 @@ $EDITOR .env
 | `ENABLE_CLIP` | | Default `true` — CLIP person/scene refinement; `false` = plain YOLO |
 | `CLIP_MODEL` / `CLIP_PRETRAINED` | | Default `ViT-B-32-quickgelu` / `openai`. On a Pi try `MobileCLIP-S1` / `datacompdr` |
 | `TOKEN_CACHE_PATH` | | Default `~/.config/ring-smart-alerts/token.json` |
-| `SNAPSHOT_DIR` | | Temp dir for in-flight snapshots; auto-cleaned |
 
 #### Home Assistant long-lived access token
 
@@ -212,9 +214,15 @@ ruff check .
 - **`package` / non-COCO `animal`** are only guessed by the CLIP whole-frame
   fallback, which runs *when YOLO finds nothing*. A parcel next to a detected
   person won't be called out; a fox alone on the step should be.
-- **Snapshots are transient.** Each snapshot is written to a temp dir only for
-  the duration of one event and deleted immediately after the notification is
-  sent; a sweep at startup clears anything left by a crash.
+- **Snapshots never hit local disk.** A frame is held in memory for the length
+  of one event. The copy that persists is the one in Home Assistant's image
+  store, and only the last `KEEP_IMAGES` (5) are kept — older ones are deleted
+  over HA's websocket API. If that prune ever fails it is logged and retried on
+  the next event; nothing else breaks.
+- **The image-store upload needs the `image_upload` integration**, which is part
+  of Home Assistant's `default_config` and on almost every install. The notify
+  target must be a companion-app device (`mobile_app_*`) for the picture to
+  render; other `notify` integrations get the text.
 - **`ring-doorbell` is an unofficial library** and its API has changed across
   versions. This targets `>= 0.9.14`; check its
   [docs](https://python-ring-doorbell.readthedocs.io/) if you upgrade.

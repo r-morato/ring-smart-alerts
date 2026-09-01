@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import logging
 import signal
-from pathlib import Path
 
 from .config import ConfigError, Settings
 from .detector import Detector, summarize
@@ -19,15 +18,6 @@ from .notifier import HANotifier, NotifyError
 from .ring_client import RingAuthError, RingClient
 
 logger = logging.getLogger(__name__)
-
-
-def _sweep(snapshot_dir: Path) -> None:
-    """Delete leftover snapshots from a previous crashed run."""
-    if not snapshot_dir.is_dir():
-        return
-    for stale in snapshot_dir.glob("*.jpg"):
-        with contextlib.suppress(OSError):
-            stale.unlink()
 
 
 async def _process_event(
@@ -39,16 +29,10 @@ async def _process_event(
     notifier: HANotifier,
     settings: Settings,
 ) -> None:
-    snapshot_path = settings.snapshot_dir / f"{event.doorbot_id}-{int(event.now)}.jpg"
-    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-
-    image_path: str | None = None
     try:
         image = await client.get_snapshot(device)
 
         if image is not None:
-            snapshot_path.write_bytes(image)
-            image_path = str(snapshot_path)
             detections = await asyncio.to_thread(detector.detect, image)
             phrase = summarize(detections)
         else:
@@ -67,13 +51,10 @@ async def _process_event(
             notifier.notify,
             message,
             title=f"Ring – {device.name}",
-            image_path=image_path,
+            image=image,
         )
     except NotifyError:
         logger.exception("Failed to notify Home Assistant")
-    finally:
-        with contextlib.suppress(OSError):
-            snapshot_path.unlink()
 
 
 async def main() -> None:
@@ -86,8 +67,6 @@ async def main() -> None:
         settings = Settings.load()
     except ConfigError as exc:
         raise SystemExit(str(exc)) from exc
-
-    _sweep(settings.snapshot_dir)
 
     detector = Detector(
         min_confidence=settings.min_confidence,
@@ -119,7 +98,6 @@ async def main() -> None:
         await client.listen(handle, stop=stop)
     finally:
         await client.close()
-        _sweep(settings.snapshot_dir)
 
 
 def _run() -> None:
