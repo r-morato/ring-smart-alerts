@@ -10,6 +10,19 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Roger Morato" }]
+keywords = ["ring", "doorbell", "home-assistant", "yolov8", "object-detection", "notifications"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+    "Topic :: Multimedia :: Graphics :: Capture :: Digital Camera",
+]
 dependencies = [
     "ring-doorbell>=0.9.14",
     "ultralytics>=8.3",
