@@ -89,7 +89,12 @@ async def main() -> None:
 
     _sweep(settings.snapshot_dir)
 
-    detector = Detector(min_confidence=settings.min_confidence)
+    detector = Detector(
+        min_confidence=settings.min_confidence,
+        enable_clip=settings.enable_clip,
+        clip_model=settings.clip_model,
+        clip_pretrained=settings.clip_pretrained,
+    )
     notifier = HANotifier(settings)
     client = RingClient(settings)
 

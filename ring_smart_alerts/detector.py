@@ -1,14 +1,20 @@
 """Local object detection on a snapshot image.
 
-Uses Ultralytics YOLOv8n (COCO, 80 classes) which runs comfortably on CPU on a
-Raspberry Pi / home server. The model weights (~6 MB) download automatically on
-first use and are cached by Ultralytics.
+Two stages, both on CPU:
 
-Package detection
------------------
-COCO has no "package"/"parcel" class, so a delivered box on the doorstep is not
-recognised by v1. A zero-shot CLIP fallback is the intended extension point --
-see :meth:`Detector._package_fallback`, which is a documented stub for now.
+1. **YOLOv8n** (Ultralytics, COCO, 80 classes) finds the boxes -- people,
+   vehicles, animals, common objects. The weights (~6 MB) download automatically
+   on first use.
+2. An optional **CLIP zero-shot** pass refines what YOLO cannot say on its own:
+
+   * every ``person`` box is cropped and classified as ``adult`` / ``child`` /
+     ``courier``, with a hedged ``(looks like a man/woman)`` guess;
+   * when YOLO finds nothing at all, the whole frame is classified as
+     ``package`` / ``animal`` (this catches foxes, raccoons and other critters
+     COCO has no class for) / ``person`` / ``vehicle``.
+
+The CLIP stage needs ``open-clip-torch``. If it is not installed, or
+``ENABLE_CLIP`` is false, the detector silently falls back to plain YOLO.
 """
 
 from __future__ import annotations
@@ -21,25 +27,49 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "yolov8n.pt"
 
+#: Cap on how many person crops we hand to CLIP per frame (latency bound).
+MAX_PERSONS = 4
+
+_UNSET = object()
+
 
 @dataclass(frozen=True, slots=True)
 class Detection:
-    """A single recognised object."""
+    """A single recognised object.
+
+    *label* is the coarse class used for logic (``person``, ``dog``, ``car``,
+    ``package``, ``animal`` ...). *detail*, when present, is the refined human
+    phrase shown to the user instead of the bare label -- e.g. ``"adult (looks
+    like a man)"`` or ``"child"``.
+    """
 
     label: str
     confidence: float
+    detail: str | None = None
 
     def __str__(self) -> str:  # pragma: no cover - trivial
-        return f"{self.label} ({self.confidence:.0%})"
+        return f"{self.detail or self.label} ({self.confidence:.0%})"
 
 
 class Detector:
-    """Runs YOLOv8n on JPEG bytes and returns thresholded, de-duplicated labels."""
+    """Runs YOLOv8n on JPEG bytes and returns thresholded, refined labels."""
 
-    def __init__(self, model_path: str = DEFAULT_MODEL, min_confidence: float = 0.35) -> None:
+    def __init__(
+        self,
+        model_path: str = DEFAULT_MODEL,
+        min_confidence: float = 0.35,
+        *,
+        enable_clip: bool = True,
+        clip_model: str = "ViT-B-32",
+        clip_pretrained: str = "openai",
+    ) -> None:
         self.model_path = model_path
         self.min_confidence = min_confidence
+        self.enable_clip = enable_clip
+        self.clip_model = clip_model
+        self.clip_pretrained = clip_pretrained
         self._model = None  # lazy: importing ultralytics/torch is slow
+        self._clip: object | None = _UNSET  # lazy + "tried and unavailable" sentinel
 
     def _load(self):
         if self._model is None:
@@ -49,11 +79,29 @@ class Detector:
             self._model = YOLO(self.model_path)
         return self._model
 
+    def _classifier(self) -> ClipClassifier | None:
+        """Return the CLIP classifier, or ``None`` if unavailable/disabled."""
+        if not self.enable_clip:
+            return None
+        if self._clip is _UNSET:
+            try:
+                import open_clip  # noqa: F401 - probe only
+            except ImportError:
+                logger.warning(
+                    "ENABLE_CLIP is on but open-clip-torch is not installed; "
+                    "person/scene refinement disabled"
+                )
+                self._clip = None
+            else:
+                self._clip = ClipClassifier(self.clip_model, self.clip_pretrained)
+        return self._clip  # type: ignore[return-value]
+
     def detect(self, image: bytes) -> list[Detection]:
         """Detect objects in *image* (JPEG/PNG bytes).
 
-        Returns detections above ``min_confidence``, one per class, sorted by
-        confidence descending.
+        Returns detections above ``min_confidence`` sorted by confidence
+        descending: one entry per ``person`` box (each individually refined) and
+        one per other class.
         """
         from PIL import Image  # ultralytics pulls in Pillow
 
@@ -61,32 +109,176 @@ class Detector:
         pil = Image.open(io.BytesIO(image)).convert("RGB")
         results = model.predict(pil, verbose=False)
 
+        persons: list[tuple[float, tuple[float, float, float, float]]] = []
         best: dict[str, float] = {}
         for result in results:
             names = result.names
-            for cls_id, conf in zip(
-                result.boxes.cls.tolist(), result.boxes.conf.tolist(), strict=True
+            boxes = result.boxes
+            for cls_id, conf, xyxy in zip(
+                boxes.cls.tolist(), boxes.conf.tolist(), boxes.xyxy.tolist(), strict=True
             ):
+                if conf < self.min_confidence:
+                    continue
                 label = names[int(cls_id)]
-                if conf >= self.min_confidence and conf > best.get(label, 0.0):
+                if label == "person":
+                    persons.append((conf, tuple(xyxy)))
+                elif conf > best.get(label, 0.0):
                     best[label] = conf
 
-        detections = [Detection(label, conf) for label, conf in best.items()]
+        clf = self._classifier()
+
+        detections: list[Detection] = []
+        persons.sort(key=lambda p: p[0], reverse=True)
+        for conf, box in persons[:MAX_PERSONS]:
+            detail = clf.describe_person(pil, box) if clf is not None else None
+            detections.append(Detection("person", conf, detail))
+
+        detections += [Detection(label, conf) for label, conf in best.items()]
         detections.sort(key=lambda d: d.confidence, reverse=True)
 
-        if not detections:
-            detections = self._package_fallback(image)
+        if not detections and clf is not None:
+            fallback = clf.classify_scene(pil)
+            if fallback is not None:
+                detections = [fallback]
         return detections
 
-    def _package_fallback(self, image: bytes) -> list[Detection]:  # noqa: ARG002
-        """Stub for a CLIP zero-shot "is there a package on the doorstep?" check.
 
-        Intended implementation: run open-clip / transformers CLIP with prompts
-        like ["a cardboard delivery box on a doorstep", "an empty doorstep"] and
-        emit ``Detection("package", score)`` when the box prompt wins. Not
-        implemented in v1; returns nothing.
-        """
-        return []
+class ClipClassifier:
+    """Zero-shot image classification via open-clip, with cached text features.
+
+    Prompt groups are constant, so their text embeddings are computed once and
+    reused -- each call is then just one image forward pass plus a matmul.
+    """
+
+    #: age / body-proportion -- fairly robust from a doorbell frame
+    _AGE = {
+        "adult": "a photo of a grown adult person",
+        "child": "a photo of a small child or young kid",
+    }
+    #: courier vs ordinary visitor -- uniform + parcel context
+    _ROLE = {
+        "courier": "a delivery courier or postal worker in uniform, often holding a parcel",
+        "": "an ordinary person in everyday clothing at a front door",
+    }
+    #: gender -- noisy, always surfaced hedged as "looks like ..."
+    _GENDER = {
+        "a man": "a photo of a man",
+        "a woman": "a photo of a woman",
+    }
+    #: whole-frame fallback when YOLO found nothing
+    _SCENE = {
+        "package": "a cardboard delivery box or parcel left on a doorstep",
+        "animal": "a wild animal such as a fox, raccoon, deer or a stray cat",
+        "person": "a person standing near the door",
+        "vehicle": "a car or a delivery truck",
+        "nothing": "an empty porch or doorway, nothing notable",
+    }
+
+    def __init__(self, model_name: str = "ViT-B-32", pretrained: str = "openai") -> None:
+        self.model_name = model_name
+        self.pretrained = pretrained
+        self._model = None
+        self._preprocess = None
+        self._tokenizer = None
+        self._text_cache: dict[tuple[str, ...], object] = {}
+
+    def _load(self):
+        if self._model is None:
+            import open_clip
+
+            logger.info("Loading CLIP model %s/%s", self.model_name, self.pretrained)
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                self.model_name, pretrained=self.pretrained
+            )
+            model.eval()
+            self._model = model
+            self._preprocess = preprocess
+            self._tokenizer = open_clip.get_tokenizer(self.model_name)
+        return self._model
+
+    def _text_features(self, texts: tuple[str, ...]):
+        import torch
+
+        cached = self._text_cache.get(texts)
+        if cached is None:
+            model = self._load()
+            with torch.no_grad():
+                feats = model.encode_text(self._tokenizer(list(texts)))
+                feats = feats / feats.norm(dim=-1, keepdim=True)
+            self._text_cache[texts] = feats
+            cached = feats
+        return cached
+
+    def _zero_shot(self, pil, prompts: dict[str, str]) -> tuple[str, float]:
+        """Return the best-matching key in *prompts* and its softmax probability."""
+        import torch
+
+        model = self._load()
+        keys = tuple(prompts)
+        text_feats = self._text_features(tuple(prompts[k] for k in keys))
+        image_input = self._preprocess(pil).unsqueeze(0)
+        with torch.no_grad():
+            img_feats = model.encode_image(image_input)
+            img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
+            probs = (100.0 * img_feats @ text_feats.T).softmax(dim=-1)[0]
+        idx = int(probs.argmax())
+        return keys[idx], float(probs[idx])
+
+    def describe_person(self, pil, box: tuple[float, float, float, float]) -> str | None:
+        """Refine one ``person`` box into a phrase, or ``None`` if nothing sticks."""
+        crop = _crop(pil, box)
+        try:
+            age, age_p = self._zero_shot(crop, self._AGE)
+            role, role_p = self._zero_shot(crop, self._ROLE)
+            gender, gender_p = self._zero_shot(crop, self._GENDER)
+        except Exception as exc:  # noqa: BLE001 - torch/model errors are non-fatal
+            logger.debug("CLIP person classify failed: %s", exc)
+            return None
+
+        if role == "courier" and role_p >= 0.72:
+            base: str | None = "courier"
+        elif age == "child" and age_p >= 0.60:
+            base = "child"
+        elif age == "adult" and age_p >= 0.60:
+            base = "adult"
+        else:
+            base = None
+
+        hedge = f"looks like {gender}" if gender_p >= 0.62 else None
+
+        if base and hedge and base != "courier":
+            return f"{base} ({hedge})"
+        if base:
+            return base
+        if hedge:
+            return f"person ({hedge})"
+        return None
+
+    def classify_scene(self, pil) -> Detection | None:
+        """Whole-frame guess for when YOLO returned nothing."""
+        try:
+            label, prob = self._zero_shot(pil, self._SCENE)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("CLIP scene classify failed: %s", exc)
+            return None
+        if label == "nothing" or prob < 0.45:
+            return None
+        return Detection(label, prob)
+
+
+def _crop(pil, box: tuple[float, float, float, float], pad: float = 0.08):
+    """Crop *box* out of *pil* with a small margin, clamped to the image."""
+    width, height = pil.size
+    left, top, right, bottom = box
+    px, py = (right - left) * pad, (bottom - top) * pad
+    return pil.crop(
+        (
+            max(0, int(left - px)),
+            max(0, int(top - py)),
+            min(width, int(right + px)),
+            min(height, int(bottom + py)),
+        )
+    )
 
 
 def summarize(detections: list[Detection]) -> str:
@@ -94,13 +286,14 @@ def summarize(detections: list[Detection]) -> str:
 
     ``[]`` -> "nothing recognised"
     ``[person]`` -> "a person"
-    ``[person, dog]`` -> "a person and a dog"
-    ``[person, dog, car]`` -> "a person, a dog and a car"
+    ``[person(detail="child"), dog]`` -> "a child and a dog"
+    ``[person(detail="adult (looks like a man)"), person(detail="child")]``
+        -> "an adult (looks like a man) and a child"
     """
     if not detections:
         return "nothing recognised"
 
-    articled = [f"{_article(d.label)} {d.label}" for d in detections]
+    articled = [f"{_article(name)} {name}" for name in (d.detail or d.label for d in detections)]
     if len(articled) == 1:
         return articled[0]
     return ", ".join(articled[:-1]) + " and " + articled[-1]

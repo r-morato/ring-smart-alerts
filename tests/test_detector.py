@@ -23,7 +23,7 @@ def sample_jpeg():
 
 def test_detects_person(sample_jpeg):
     try:
-        detections = Detector(min_confidence=0.3).detect(sample_jpeg)
+        detections = Detector(min_confidence=0.3, enable_clip=False).detect(sample_jpeg)
     except Exception as exc:  # model download / torch load failure in CI
         pytest.skip(f"YOLO unavailable: {exc}")
 

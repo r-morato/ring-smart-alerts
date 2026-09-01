@@ -8,7 +8,10 @@ When your Ring camera fires a **motion** or **ding** event, this app:
 1. fetches a snapshot from Ring — a fresh frame if the camera can produce one,
    otherwise Ring's last stored snapshot, otherwise nothing,
 2. runs it through a **local** YOLOv8n object-detection model (CPU, no GPU, no
-   cloud AI), and
+   cloud AI), then a **local CLIP zero-shot** pass that refines each person into
+   `adult` / `child` / `courier` with a hedged `(looks like a man/woman)` guess,
+   and — when YOLO sees nothing — guesses `package` / `animal` / `person` /
+   `vehicle` for the whole frame, and
 3. posts a descriptive notification to **Home Assistant** via its REST
    `notify` service, with the snapshot attached (or text-only if no image was
    available).
@@ -25,9 +28,9 @@ instance.
 Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
                                                      │
                                                      ▼
-                                            detector.py (YOLOv8n)
-                                                     │  labels + confidence
-                                                     ▼
+                                       detector.py: YOLOv8n boxes
+                                                     │  + CLIP refine per person
+                                                     ▼  + CLIP fallback if blank
                                             notifier.py  ──►  Home Assistant
                                                               notify.<target>
 ```
@@ -36,7 +39,7 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 |------|----------------|
 | `ring_smart_alerts/config.py` | Load & validate settings from env / `.env` |
 | `ring_smart_alerts/ring_client.py` | Ring auth (+ first-run 2FA), token/FCM cache, snapshots, event listener |
-| `ring_smart_alerts/detector.py` | Run YOLOv8n on an image, return de-duped labels; `summarize()` → phrase |
+| `ring_smart_alerts/detector.py` | YOLOv8n boxes + `ClipClassifier` refinement; `summarize()` → phrase |
 | `ring_smart_alerts/notifier.py` | POST to the Home Assistant `notify` service |
 | `ring_smart_alerts/main.py` | Event loop tying it together, snapshot cleanup, graceful shutdown |
 
@@ -55,6 +58,9 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
   powered and normally return a current frame on the first step.
 - A Home Assistant instance with the mobile app companion (or any other `notify`
   integration) and a long-lived access token.
+- For the CLIP refinement stage: `open-clip-torch` (in `requirements.txt`) plus a
+  one-time ~340 MB checkpoint download. Set `ENABLE_CLIP=false` to run plain YOLO
+  and skip both.
 
 ---
 
@@ -72,9 +78,10 @@ py -3.12 -m venv .venv           # Windows
 pip install -r requirements.txt
 ```
 
-The first detection downloads `yolov8n.pt` (~6 MB) automatically. `torch` comes
-in as a dependency of `ultralytics`; on a Pi this is the CPU build and is large
-(~100 MB) — be patient on the first install.
+The first detection downloads `yolov8n.pt` (~6 MB) automatically, and the first
+CLIP call downloads its checkpoint (~340 MB for the default `ViT-B-32/openai`).
+`torch` comes in as a dependency of `ultralytics`; on a Pi this is the CPU build
+and is large (~100 MB) — be patient on the first install.
 
 ### Configure
 
@@ -92,6 +99,8 @@ $EDITOR .env
 | `MIN_CONFIDENCE` | | Default `0.35` |
 | `EVENT_KINDS` | | Default `motion,ding` |
 | `NOTIFY_ON_EMPTY` | | Default `true` — still alert when nothing is recognised |
+| `ENABLE_CLIP` | | Default `true` — CLIP person/scene refinement; `false` = plain YOLO |
+| `CLIP_MODEL` / `CLIP_PRETRAINED` | | Default `ViT-B-32` / `openai`. On a Pi try `MobileCLIP-S1` / `datacompdr` |
 | `TOKEN_CACHE_PATH` | | Default `~/.config/ring-smart-alerts/token.json` |
 | `SNAPSHOT_DIR` | | Temp dir for in-flight snapshots; auto-cleaned |
 
@@ -159,7 +168,7 @@ enabling the service.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # test_detector downloads yolov8n.pt once; other tests are offline
+pytest -q          # test_detector downloads yolov8n.pt once; the rest are offline
 ruff check .
 ```
 
@@ -167,9 +176,14 @@ ruff check .
 
 ## Notes & limitations
 
-- **No "package" class.** YOLOv8n uses the 80 COCO classes, which don't include
-  parcels/boxes. `detector.py._package_fallback()` is a documented stub for a
-  future CLIP zero-shot check ("a cardboard box on a doorstep").
+- **`person` refinement is a best-effort guess.** Doorbell frames are low-res,
+  wide-angle, often backlit or night IR, with the subject side-on. `adult` vs
+  `child` (body proportion) and `courier` (uniform + parcel) hold up reasonably;
+  `man` vs `woman` is noisy and is only ever surfaced hedged as "looks like a
+  …". Nothing sticks below its confidence threshold — you just get "a person".
+- **`package` / non-COCO `animal`** are only guessed by the CLIP whole-frame
+  fallback, which runs *when YOLO finds nothing*. A parcel next to a detected
+  person won't be called out; a fox alone on the step should be.
 - **Snapshots are transient.** Each snapshot is written to a temp dir only for
   the duration of one event and deleted immediately after the notification is
   sent; a sweep at startup clears anything left by a crash.

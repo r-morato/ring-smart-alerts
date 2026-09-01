@@ -42,6 +42,10 @@ class Settings:
     event_kinds: frozenset[str] = frozenset({"motion", "ding"})
     notify_on_empty: bool = True
 
+    enable_clip: bool = True
+    clip_model: str = "ViT-B-32"
+    clip_pretrained: str = "openai"
+
     token_cache_path: Path = field(
         default_factory=lambda: Path.home() / ".config" / "ring-smart-alerts" / "token.json"
     )
@@ -83,12 +87,17 @@ class Settings:
             min_confidence=_get_float("MIN_CONFIDENCE", 0.35),
             event_kinds=event_kinds,
             notify_on_empty=_get_bool("NOTIFY_ON_EMPTY", True),
+            enable_clip=_get_bool("ENABLE_CLIP", True),
         )
 
         if token_path := os.environ.get("TOKEN_CACHE_PATH"):
             settings.token_cache_path = Path(token_path).expanduser()
         if snap_dir := os.environ.get("SNAPSHOT_DIR"):
             settings.snapshot_dir = Path(snap_dir).expanduser()
+        if clip_model := os.environ.get("CLIP_MODEL"):
+            settings.clip_model = clip_model
+        if clip_pretrained := os.environ.get("CLIP_PRETRAINED"):
+            settings.clip_pretrained = clip_pretrained
 
         return settings
 
