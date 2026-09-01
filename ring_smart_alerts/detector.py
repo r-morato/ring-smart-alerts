@@ -60,7 +60,7 @@ class Detector:
         min_confidence: float = 0.35,
         *,
         enable_clip: bool = True,
-        clip_model: str = "ViT-B-32",
+        clip_model: str = "ViT-B-32-quickgelu",
         clip_pretrained: str = "openai",
     ) -> None:
         self.model_path = model_path
@@ -150,15 +150,13 @@ class ClipClassifier:
     reused -- each call is then just one image forward pass plus a matmul.
     """
 
-    #: age / body-proportion -- fairly robust from a doorbell frame
-    _AGE = {
-        "adult": "a photo of a grown adult person",
-        "child": "a photo of a small child or young kid",
-    }
-    #: courier vs ordinary visitor -- uniform + parcel context
-    _ROLE = {
-        "courier": "a delivery courier or postal worker in uniform, often holding a parcel",
-        "": "an ordinary person in everyday clothing at a front door",
+    #: "what kind of visitor" -- one softmax so the options compete honestly.
+    #: The empty key is the escape hatch: when it wins we say nothing.
+    _KIND = {
+        "courier": "a delivery courier or postal worker in uniform, often with a parcel",
+        "child": "a young child or a little kid, small and short",
+        "adult": "a grown adult man or woman",
+        "": "a person",
     }
     #: gender -- noisy, always surfaced hedged as "looks like ..."
     _GENDER = {
@@ -228,23 +226,18 @@ class ClipClassifier:
         """Refine one ``person`` box into a phrase, or ``None`` if nothing sticks."""
         crop = _crop(pil, box)
         try:
-            age, age_p = self._zero_shot(crop, self._AGE)
-            role, role_p = self._zero_shot(crop, self._ROLE)
+            kind, kind_p = self._zero_shot(crop, self._KIND)
             gender, gender_p = self._zero_shot(crop, self._GENDER)
         except Exception as exc:  # noqa: BLE001 - torch/model errors are non-fatal
             logger.debug("CLIP person classify failed: %s", exc)
             return None
 
-        if role == "courier" and role_p >= 0.72:
-            base: str | None = "courier"
-        elif age == "child" and age_p >= 0.60:
-            base = "child"
-        elif age == "adult" and age_p >= 0.60:
-            base = "adult"
-        else:
-            base = None
+        # Conservative floors: a wrong "child" or "courier" is worse than a bare
+        # "person". Tune these down once you've watched real events.
+        floor = {"child": 0.65, "courier": 0.62}.get(kind, 0.45)
+        base: str | None = kind if kind and kind_p >= floor else None
 
-        hedge = f"looks like {gender}" if gender_p >= 0.62 else None
+        hedge = f"looks like {gender}" if gender_p >= 0.60 else None
 
         if base and hedge and base != "courier":
             return f"{base} ({hedge})"

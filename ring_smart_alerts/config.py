@@ -43,7 +43,7 @@ class Settings:
     notify_on_empty: bool = True
 
     enable_clip: bool = True
-    clip_model: str = "ViT-B-32"
+    clip_model: str = "ViT-B-32-quickgelu"
     clip_pretrained: str = "openai"
 
     token_cache_path: Path = field(

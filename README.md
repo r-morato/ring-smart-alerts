@@ -79,7 +79,8 @@ pip install -r requirements.txt
 ```
 
 The first detection downloads `yolov8n.pt` (~6 MB) automatically, and the first
-CLIP call downloads its checkpoint (~340 MB for the default `ViT-B-32/openai`).
+CLIP call downloads its checkpoint (~340 MB for the default
+`ViT-B-32-quickgelu/openai`).
 `torch` comes in as a dependency of `ultralytics`; on a Pi this is the CPU build
 and is large (~100 MB) — be patient on the first install.
 
@@ -100,7 +101,7 @@ $EDITOR .env
 | `EVENT_KINDS` | | Default `motion,ding` |
 | `NOTIFY_ON_EMPTY` | | Default `true` — still alert when nothing is recognised |
 | `ENABLE_CLIP` | | Default `true` — CLIP person/scene refinement; `false` = plain YOLO |
-| `CLIP_MODEL` / `CLIP_PRETRAINED` | | Default `ViT-B-32` / `openai`. On a Pi try `MobileCLIP-S1` / `datacompdr` |
+| `CLIP_MODEL` / `CLIP_PRETRAINED` | | Default `ViT-B-32-quickgelu` / `openai`. On a Pi try `MobileCLIP-S1` / `datacompdr` |
 | `TOKEN_CACHE_PATH` | | Default `~/.config/ring-smart-alerts/token.json` |
 | `SNAPSHOT_DIR` | | Temp dir for in-flight snapshots; auto-cleaned |
 
