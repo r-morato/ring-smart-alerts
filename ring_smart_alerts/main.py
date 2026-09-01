@@ -42,12 +42,18 @@ async def _process_event(
     snapshot_path = settings.snapshot_dir / f"{event.doorbot_id}-{int(event.now)}.jpg"
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
 
+    image_path: str | None = None
     try:
         image = await client.get_snapshot(device)
-        snapshot_path.write_bytes(image)
 
-        detections = await asyncio.to_thread(detector.detect, image)
-        phrase = summarize(detections)
+        if image is not None:
+            snapshot_path.write_bytes(image)
+            image_path = str(snapshot_path)
+            detections = await asyncio.to_thread(detector.detect, image)
+            phrase = summarize(detections)
+        else:
+            detections = []
+            phrase = "no snapshot available"
 
         if not detections and not settings.notify_on_empty:
             logger.info("%s on %s: nothing recognised (suppressed)", event.kind, device.name)
@@ -61,7 +67,7 @@ async def _process_event(
             notifier.notify,
             message,
             title=f"Ring – {device.name}",
-            image_path=str(snapshot_path),
+            image_path=image_path,
         )
     except NotifyError:
         logger.exception("Failed to notify Home Assistant")

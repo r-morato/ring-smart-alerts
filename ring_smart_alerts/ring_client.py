@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT = "ring-smart-alerts/0.1"
 
+#: Ring endpoint for the last stored snapshot image (see ring_doorbell.const)
+_SNAPSHOT_IMAGE_ENDPOINT = "/clients_api/snapshots/image/{0}"
+
 class RingAuthError(RuntimeError):
     """Ring authentication failed for a reason the user needs to act on."""
 
@@ -126,17 +129,35 @@ class RingClient:
 
     # -------------------------------------------------------------- snapshots
 
-    async def get_snapshot(self, device: Any) -> bytes:
-        """Return current JPEG bytes for *device*.
+    async def get_snapshot(self, device: Any) -> bytes | None:
+        """Return JPEG bytes for *device*, or ``None`` if no image is available.
 
-        Battery/low-power cameras cannot snapshot while recording a motion clip;
-        without a Ring subscription this may return a slightly stale frame or
-        raise. Callers should treat failures as non-fatal.
+        Battery/low-power cameras cannot produce a *fresh* snapshot while they
+        are recording a motion clip, and without a Ring subscription there is no
+        snapshot-on-motion. We therefore:
+
+        1. ask for a fresh snapshot, polling generously (~16s);
+        2. fall back to the last stored snapshot Ring has (may be stale);
+        3. give up and return ``None`` so the caller can still send a text alert.
         """
-        data = await device.async_get_snapshot()
-        if not data:
-            raise RuntimeError(f"No snapshot returned for {device.name!r}")
-        return data
+        try:
+            data = await device.async_get_snapshot(retries=8, delay=2)
+            if data:
+                return data
+        except Exception as exc:  # noqa: BLE001 - library raises a grab-bag of errors
+            logger.debug("Fresh snapshot failed for %s: %s", device.name, exc)
+
+        # Fall back to whatever image Ring already has on file.
+        try:
+            resp = await self._ring.async_query(_SNAPSHOT_IMAGE_ENDPOINT.format(device.id))
+            if resp.content:
+                logger.info("Using last stored snapshot for %s (no fresh one)", device.name)
+                return resp.content
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Stored snapshot fallback failed for %s: %s", device.name, exc)
+
+        logger.warning("No snapshot available for %s", device.name)
+        return None
 
     # ----------------------------------------------------------------- events
 
