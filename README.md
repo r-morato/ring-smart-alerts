@@ -1,39 +1,31 @@
 # ring-smart-alerts
 
-Turn Ring's generic *"motion detected"* into *"a person and a dog at the front
-door"* — **all the image processing runs locally, no LLM.**
+On a Ring motion or doorbell event, Ring only tells you "motion detected". This
+service fetches the camera snapshot, runs object detection on it locally, and
+sends a Home Assistant notification describing what is in frame, for example "a
+person and a dog at the front door".
 
-## No second cloud, no LLM
-
-Ring already has your snapshots — that is where they come from. This project adds
-nothing to that: the analysis runs on your own hardware and the picture goes only
-to your own Home Assistant.
-
-- **No third-party vision service, ever.** The frame is analysed in memory on
-  your CPU — YOLOv8n and CLIP, weights downloaded once then fully offline — and
-  is never uploaded to Anthropic, OpenAI, Google, Ultralytics or Hugging Face.
-- **No LLM, no agent.** Detection is deterministic model inference, not a chatbot
-  reasoning about your doorstep — nothing logs a running description of your front
-  door on someone else's server.
-- **The only outbound traffic** is to Ring's own API (how the events and
-  snapshots arrive in the first place) and to your Home Assistant instance. The
-  snapshot is held in memory for one event and never written to local disk.
+All image processing happens on the machine you run this on. It uses two models,
+YOLOv8n for object detection and CLIP for a follow-up classification pass, both
+on CPU. There is no LLM and no third-party vision API. The snapshot comes from
+Ring, is analysed in memory, and is sent on to your own Home Assistant so the
+notification can show it. It is not written to local disk and is not sent
+anywhere else.
 
 ## What it does
 
-When your Ring camera fires a **motion** or **ding** event, this app:
+On a Ring `motion` or `ding` event:
 
-1. fetches a snapshot from Ring — a fresh frame if the camera can produce one,
-   otherwise Ring's last stored snapshot, otherwise nothing,
-2. runs it through a **local** YOLOv8n object-detection model (CPU, no GPU),
-   then a **local CLIP zero-shot** pass that refines each person into `adult` /
-   `child` / `courier` with a hedged `(looks like a man/woman)` guess, and — when
-   YOLO sees nothing — guesses `package` / `animal` / `person` / `vehicle` for
-   the whole frame, and
-3. posts a plain-language notification to **Home Assistant** via its REST
-   `notify` service, with the snapshot attached — the image is uploaded to HA's
-   own image store so the companion app can render it (older ones are pruned
-   automatically).
+1. Fetch a snapshot from Ring. If the camera can produce a fresh frame it uses
+   that; otherwise it falls back to Ring's last stored snapshot; if there is
+   nothing, it sends a text-only alert.
+2. Run YOLOv8n object detection on CPU. Each detected person is passed through a
+   CLIP zero-shot pass that labels them `adult`, `child` or `courier`, with a
+   hedged `(looks like a man/woman)` guess. If YOLO finds nothing, CLIP makes a
+   whole-frame guess of `package`, `animal`, `person` or `vehicle`.
+3. Post a notification to Home Assistant through its REST `notify` service, with
+   the snapshot attached. The image is uploaded to Home Assistant's own image
+   store so the companion app can display it, and older uploads are pruned.
 
 ---
 
@@ -67,23 +59,23 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 | out → | your Home Assistant (websocket API) | delete calls for pruned snapshots |
 | out → (first run only) | Ultralytics CDN, Hugging Face Hub | model weights, cached forever after |
 
-The snapshot travels *from* Ring *to* your machine, is held in memory for
-analysis (never written to disk), and is then handed to **your** Home Assistant
-so the notification can display it. HA keeps the last `KEEP_IMAGES` (5)
+The snapshot travels from Ring to your machine, is held in memory for analysis
+and not written to disk, and is then sent to your Home Assistant so the
+notification can display it. Home Assistant keeps the last `KEEP_IMAGES` (5)
 snapshots and this app deletes the older ones over HA's websocket API.
 
 ---
 
 ## Requirements
 
-- **Python 3.11+** (developed on 3.12 — on Windows use `py -3.12`, the bare
+- Python 3.11+ (developed on 3.12; on Windows use `py -3.12`, the bare
   `python` alias is the Store stub).
-- A Ring account. **Battery / low-power cameras cannot take a fresh snapshot
-  while they are recording a motion clip**, and without a Ring Protect
+- A Ring account. Battery and low-power cameras cannot take a fresh snapshot
+  while they are recording a motion clip, and without a Ring Protect
   subscription there is no snapshot-on-motion. `get_snapshot` handles this in
   three steps: poll ~16 s for a fresh frame, fall back to Ring's last stored
   snapshot (may be a few minutes stale), and if there is still nothing, send a
-  text-only alert. Hardwired doorbells (Wired / Pro / Pro 2 / Elite) stay
+  text-only alert. Hardwired doorbells (Wired, Pro, Pro 2, Elite) stay
   powered and normally return a current frame on the first step.
 - A Home Assistant instance with the mobile app companion (or any other `notify`
   integration) and a long-lived access token.
@@ -113,7 +105,7 @@ The first detection downloads `yolov8n.pt` (~6 MB) automatically, and the first
 CLIP call downloads its checkpoint (~340 MB for the default
 `ViT-B-32-quickgelu/openai`).
 `torch` comes in as a dependency of `ultralytics`; on a Pi this is the CPU build
-and is large (~100 MB) — be patient on the first install.
+and is large (~100 MB), so the first install takes a while.
 
 ### Configure
 
@@ -127,11 +119,11 @@ $EDITOR .env
 | `RING_EMAIL`, `RING_PASSWORD` | ✅ | Ring account login |
 | `HA_URL` | ✅ | e.g. `http://homeassistant.local:8123` |
 | `HA_TOKEN` | ✅ | Long-lived access token (see below) |
-| `HA_NOTIFY_TARGET` | ✅ | The bit after `notify.` — e.g. `mobile_app_<device>`. Must match an existing service exactly; a wrong name gives an opaque HTTP 400 |
+| `HA_NOTIFY_TARGET` | ✅ | The part after `notify.`, e.g. `mobile_app_<device>`. Must match an existing service exactly; a wrong name gives an opaque HTTP 400 |
 | `MIN_CONFIDENCE` | | Default `0.35` |
 | `EVENT_KINDS` | | Default `motion,ding` |
-| `NOTIFY_ON_EMPTY` | | Default `true` — still alert when nothing is recognised |
-| `ENABLE_CLIP` | | Default `true` — CLIP person/scene refinement; `false` = plain YOLO |
+| `NOTIFY_ON_EMPTY` | | Default `true`; still alert when nothing is recognised |
+| `ENABLE_CLIP` | | Default `true`; CLIP person/scene refinement. `false` runs plain YOLO |
 | `CLIP_MODEL` / `CLIP_PRETRAINED` | | Default `ViT-B-32-quickgelu` / `openai`. On a Pi try `MobileCLIP-S1` / `datacompdr` |
 | `TOKEN_CACHE_PATH` | | Default `~/.config/ring-smart-alerts/token.json` |
 
@@ -142,7 +134,7 @@ Home Assistant → click your **profile** (bottom-left) → **Security** tab →
 
 #### Finding your notify target
 
-Developer Tools → **Actions** (formerly Services) → search `notify.` — the
+Developer Tools → **Actions** (formerly Services) → search `notify.`. The
 companion app registers as `notify.mobile_app_<device_name>`, where
 `<device_name>` is the phone's name in the HA app (slugified). Put just
 `mobile_app_<device_name>` in `HA_NOTIFY_TARGET`. If the name doesn't match a
@@ -154,8 +146,8 @@ real service, Home Assistant rejects every call with a bare `400: Bad Request`.
 py -3.12 -m ring_smart_alerts.main
 ```
 
-Ring will require a 2FA code (sent by email/SMS). Enter it when prompted **once** —
-the auth token and the FCM listener credentials are cached to
+Ring will require a 2FA code (sent by email/SMS). Enter it when prompted once.
+The auth token and the FCM listener credentials are then cached to
 `TOKEN_CACHE_PATH`, so subsequent starts are non-interactive. Keep that file
 private (it is created mode `600` on Unix).
 
@@ -211,16 +203,17 @@ ruff check .
   wide-angle, often backlit or night IR, with the subject side-on. `adult` vs
   `child` (body proportion) and `courier` (uniform + parcel) hold up reasonably;
   `man` vs `woman` is noisy and is only ever surfaced hedged as "looks like a
-  …". Nothing sticks below its confidence threshold — you just get "a person".
+  ...". Nothing sticks below its confidence threshold, in which case you just
+  get "a person".
 - **`package` / non-COCO `animal`** are only guessed by the CLIP whole-frame
   fallback, which runs *when YOLO finds nothing*. A parcel next to a detected
   person won't be called out; a fox alone on the step should be.
-- **Snapshots never hit local disk.** A frame is held in memory for the length
-  of one event. The copy that persists is the one in Home Assistant's image
-  store, and only the last `KEEP_IMAGES` (5) are kept — older ones are deleted
-  over HA's websocket API. If a delete fails it is logged and that one image is
-  left in HA (harmless — a snapshot is tens of KB; clear it from the image
-  store by hand if you like).
+- **Snapshots are not written to local disk.** A frame is held in memory for the
+  length of one event. The copy that persists is the one in Home Assistant's
+  image store, and only the last `KEEP_IMAGES` (5) are kept; older ones are
+  deleted over HA's websocket API. If a delete fails it is logged and that one
+  image is left in HA. This is harmless, since a snapshot is tens of KB; clear
+  it from the image store by hand if you like.
 - **The image-store upload needs the `image_upload` integration**, which is part
   of Home Assistant's `default_config` and on almost every install. The notify
   target must be a companion-app device (`mobile_app_*`) for the picture to
@@ -231,4 +224,4 @@ ruff check .
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
