@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT = "ring-smart-alerts/0.1"
 
+class RingAuthError(RuntimeError):
+    """Ring authentication failed for a reason the user needs to act on."""
+
+
 #: async callback invoked for each accepted event: (device, event) -> None
 EventHandler = Callable[[Any, Any], Awaitable[None]]
 #: prompt for the 2FA code; overridable in tests
@@ -77,10 +81,25 @@ class RingClient:
         s = self._settings
         auth = Auth(USER_AGENT, None, self._on_token_updated)
         try:
-            await auth.async_fetch_token(s.ring_email, s.ring_password)
-        except Requires2FAError:
-            code = self._otp_provider()
-            await auth.async_fetch_token(s.ring_email, s.ring_password, code)
+            try:
+                await auth.async_fetch_token(s.ring_email, s.ring_password)
+            except Requires2FAError:
+                code = self._otp_provider()
+                try:
+                    await auth.async_fetch_token(s.ring_email, s.ring_password, code)
+                except AuthenticationError as exc:
+                    raise RingAuthError(
+                        f"Ring rejected the 2FA code: {exc}. It may have expired -- try again."
+                    ) from exc
+            except AuthenticationError as exc:
+                raise RingAuthError(
+                    "Ring rejected RING_EMAIL / RING_PASSWORD "
+                    f"({exc}). Check them in .env; note repeated failures can trigger a "
+                    "temporary lockout."
+                ) from exc
+        except BaseException:
+            await auth.async_close()
+            raise
         return auth
 
     async def connect(self) -> None:

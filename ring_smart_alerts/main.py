@@ -16,7 +16,7 @@ from pathlib import Path
 from .config import ConfigError, Settings
 from .detector import Detector, summarize
 from .notifier import HANotifier, NotifyError
-from .ring_client import RingClient
+from .ring_client import RingAuthError, RingClient
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,10 @@ async def main() -> None:
     notifier = HANotifier(settings)
     client = RingClient(settings)
 
-    await client.connect()
+    try:
+        await client.connect()
+    except RingAuthError as exc:
+        raise SystemExit(f"Ring authentication failed: {exc}") from exc
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
