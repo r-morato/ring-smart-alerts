@@ -1,24 +1,39 @@
 # ring-smart-alerts
 
 Turn Ring's generic *"motion detected"* into *"a person and a dog at the front
-door"*.
+door"* — **without your camera images ever leaving your network.**
+
+## Private by design
+
+The image analysis runs entirely on your own hardware. No cloud AI, no LLM, no
+third-party vision API — just two small neural networks doing CPU inference on a
+Raspberry Pi or home server.
+
+- **Your snapshots are never uploaded anywhere by this app.** A frame comes
+  *down* from Ring to your machine, is analysed locally, and is deleted the
+  moment the alert is sent.
+- **No image analysis service is contacted** — ever. The models (YOLOv8n and
+  CLIP) download their weights once, then run fully offline.
+- **The only outbound traffic** is to Ring's own API (how the events and
+  snapshots arrive in the first place) and to *your* Home Assistant instance on
+  your LAN. Nothing goes to Anthropic, OpenAI, Google, Ultralytics or Hugging
+  Face at runtime.
+- **No agent, no LLM in the loop.** Detection is deterministic model inference,
+  not a chatbot reasoning about your doorstep.
+
+## What it does
 
 When your Ring camera fires a **motion** or **ding** event, this app:
 
 1. fetches a snapshot from Ring — a fresh frame if the camera can produce one,
    otherwise Ring's last stored snapshot, otherwise nothing,
-2. runs it through a **local** YOLOv8n object-detection model (CPU, no GPU, no
-   cloud AI), then a **local CLIP zero-shot** pass that refines each person into
-   `adult` / `child` / `courier` with a hedged `(looks like a man/woman)` guess,
-   and — when YOLO sees nothing — guesses `package` / `animal` / `person` /
-   `vehicle` for the whole frame, and
-3. posts a descriptive notification to **Home Assistant** via its REST
-   `notify` service, with the snapshot attached (or text-only if no image was
-   available).
-
-Everything runs on a Raspberry Pi / home server. The only outbound traffic is to
-Ring's own API (for the snapshot and the event stream) and to your Home Assistant
-instance.
+2. runs it through a **local** YOLOv8n object-detection model (CPU, no GPU),
+   then a **local CLIP zero-shot** pass that refines each person into `adult` /
+   `child` / `courier` with a hedged `(looks like a man/woman)` guess, and — when
+   YOLO sees nothing — guesses `package` / `animal` / `person` / `vehicle` for
+   the whole frame, and
+3. posts a plain-language notification to **Home Assistant** via its REST
+   `notify` service.
 
 ---
 
@@ -42,6 +57,18 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 | `ring_smart_alerts/detector.py` | YOLOv8n boxes + `ClipClassifier` refinement; `summarize()` → phrase |
 | `ring_smart_alerts/notifier.py` | POST to the Home Assistant `notify` service |
 | `ring_smart_alerts/main.py` | Event loop tying it together, snapshot cleanup, graceful shutdown |
+
+### What crosses the network
+
+| Direction | Endpoint | Carries |
+|-----------|----------|---------|
+| in ← | Ring API + Firebase Cloud Messaging | the event push stream and the snapshot bytes |
+| out → | your Home Assistant (`HA_URL`, your LAN) | the alert text and title — **not the image** |
+| out → (first run only) | Ultralytics CDN, Hugging Face Hub | model weights, cached forever after |
+
+The snapshot itself only ever travels *from* Ring *to* your machine. It is
+written to a temp dir, analysed, and unlinked as soon as the notification
+returns; a sweep on startup clears anything a crash left behind.
 
 ---
 
