@@ -57,7 +57,7 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 | `ring_smart_alerts/ring_client.py` | Ring auth (+ first-run 2FA), token/FCM cache, snapshots, event listener |
 | `ring_smart_alerts/detector.py` | YOLOv8n boxes + `ClipClassifier` refinement; `summarize()` → phrase |
 | `ring_smart_alerts/notifier.py` | Upload the snapshot to HA's image store, POST the `notify` service, prune old images |
-| `ring_smart_alerts/main.py` | Event loop tying it together, snapshot cleanup, graceful shutdown |
+| `ring_smart_alerts/main.py` | Event loop tying it together, graceful shutdown |
 
 ### What crosses the network
 
@@ -217,8 +217,9 @@ ruff check .
 - **Snapshots never hit local disk.** A frame is held in memory for the length
   of one event. The copy that persists is the one in Home Assistant's image
   store, and only the last `KEEP_IMAGES` (5) are kept — older ones are deleted
-  over HA's websocket API. If that prune ever fails it is logged and retried on
-  the next event; nothing else breaks.
+  over HA's websocket API. If a delete fails it is logged and that one image is
+  left in HA (harmless — a snapshot is tens of KB; clear it from the image
+  store by hand if you like).
 - **The image-store upload needs the `image_upload` integration**, which is part
   of Home Assistant's `default_config` and on almost every install. The notify
   target must be a companion-app device (`mobile_app_*`) for the picture to
