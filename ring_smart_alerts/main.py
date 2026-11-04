@@ -39,7 +39,8 @@ async def _process_event(
             detections = []
             phrase = "no snapshot available"
 
-        if not detections and not settings.notify_on_empty:
+        # Only suppress a frame we actually looked at; a missing snapshot still alerts.
+        if image is not None and not detections and not settings.notify_on_empty:
             logger.info("%s on %s: nothing recognised (suppressed)", event.kind, device.name)
             return
 
