@@ -13,6 +13,7 @@ import logging
 import signal
 
 from .config import ConfigError, Settings
+from .cooldown import MotionCooldown
 from .detector import Detector, summarize
 from .notifier import HANotifier, NotifyError
 from .ring_client import RingAuthError, RingClient
@@ -28,6 +29,7 @@ async def _process_event(
     detector: Detector,
     notifier: HANotifier,
     settings: Settings,
+    cooldown: MotionCooldown | None = None,
 ) -> None:
     try:
         image = await client.get_snapshot(device)
@@ -44,6 +46,13 @@ async def _process_event(
             logger.info("%s on %s: nothing recognised (suppressed)", event.kind, device.name)
             return
 
+        # Rings always get through; repeated motion that shows nothing new doesn't.
+        camera = str(getattr(device, "id", None) or device.name)
+        labels = {d.label for d in detections}
+        if cooldown and event.kind != "ding" and cooldown.is_repeat(camera, labels):
+            logger.info("%s on %s: %s (cooldown, nothing new)", event.kind, device.name, phrase)
+            return
+
         verb = "rang the doorbell" if event.kind == "ding" else "motion"
         message = f"{device.name}: {verb} — {phrase}"
         logger.info(message)
@@ -54,6 +63,8 @@ async def _process_event(
             title=f"Ring – {device.name}",
             image=image,
         )
+        if cooldown:
+            cooldown.record(camera, labels)
     except NotifyError:
         logger.exception("Failed to notify Home Assistant")
 
@@ -77,6 +88,9 @@ async def main() -> None:
     )
     notifier = HANotifier(settings)
     client = RingClient(settings)
+    cooldown = MotionCooldown(settings.motion_cooldown)
+    if settings.motion_cooldown > 0:
+        logger.info("Motion cooldown: %ss per camera", f"{settings.motion_cooldown:g}")
 
     try:
         await client.connect()
@@ -93,6 +107,7 @@ async def main() -> None:
         await _process_event(
             device, event,
             client=client, detector=detector, notifier=notifier, settings=settings,
+            cooldown=cooldown,
         )
 
     try:
