@@ -40,6 +40,7 @@ class Settings:
     min_confidence: float = 0.35
     event_kinds: frozenset[str] = frozenset({"motion", "ding"})
     notify_on_empty: bool = True
+    motion_cooldown: float = 0.0
 
     enable_clip: bool = True
     clip_model: str = "ViT-B-32-quickgelu"
@@ -83,8 +84,12 @@ class Settings:
             min_confidence=_get_float("MIN_CONFIDENCE", 0.35),
             event_kinds=event_kinds,
             notify_on_empty=_get_bool("NOTIFY_ON_EMPTY", True),
+            motion_cooldown=_get_float("MOTION_COOLDOWN", 0.0),
             enable_clip=_get_bool("ENABLE_CLIP", True),
         )
+
+        if settings.motion_cooldown < 0:
+            raise ConfigError("MOTION_COOLDOWN must be 0 (off) or a number of seconds")
 
         if token_path := os.environ.get("TOKEN_CACHE_PATH"):
             settings.token_cache_path = Path(token_path).expanduser()

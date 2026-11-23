@@ -27,6 +27,12 @@ On a Ring `motion` or `ding` event:
    the snapshot attached. The image is uploaded to Home Assistant's own image
    store so the companion app can display it, and older uploads are pruned.
 
+Set `MOTION_COOLDOWN` and a busy camera stops repeating itself: after a motion
+alert, more motion from the same camera is skipped for that many seconds unless
+it shows something new. A parked car in view gives you one "a car", not one
+every few minutes, but a person walking up afterwards still alerts. Doorbell
+rings are never held back.
+
 ---
 
 ## How it fits together
@@ -48,6 +54,7 @@ Ring event (FCM push)  ──►  ring_client.py  ──►  snapshot bytes
 | `ring_smart_alerts/ring_client.py` | Ring auth (+ first-run 2FA), token/FCM cache, snapshots, event listener |
 | `ring_smart_alerts/detector.py` | YOLOv8n boxes + `ClipClassifier` refinement; `summarize()` → phrase |
 | `ring_smart_alerts/notifier.py` | Upload the snapshot to HA's image store, POST the `notify` service, prune old images |
+| `ring_smart_alerts/cooldown.py` | Per-camera motion cooldown (`MOTION_COOLDOWN`) |
 | `ring_smart_alerts/main.py` | Event loop tying it together, graceful shutdown |
 
 ### What crosses the network
@@ -123,6 +130,7 @@ $EDITOR .env
 | `MIN_CONFIDENCE` | | Default `0.35` |
 | `EVENT_KINDS` | | Default `motion,ding` |
 | `NOTIFY_ON_EMPTY` | | Default `true`; still alert when nothing is recognised |
+| `MOTION_COOLDOWN` | | Default `0` (off). Seconds to stay quiet after a camera's motion alert unless something new shows up, e.g. `120`. Doorbell rings always alert |
 | `ENABLE_CLIP` | | Default `true`; CLIP person/scene refinement. `false` runs plain YOLO |
 | `CLIP_MODEL` / `CLIP_PRETRAINED` | | Default `ViT-B-32-quickgelu` / `openai`. On a Pi try `MobileCLIP-S1` / `datacompdr` |
 | `TOKEN_CACHE_PATH` | | Default `~/.config/ring-smart-alerts/token.json` |
